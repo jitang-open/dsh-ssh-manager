@@ -17,7 +17,15 @@ SSH 主机管理器，作为 DeepSeek Harness 的 **profile bundle** 常驻在 w
 
 ## 它是怎么被装上的
 
-1. 包目录软链进 profile：`~/.dsh/profiles/web/node_modules/dsh-ssh-manager` → 本目录
+1. profile 以 **`link:`** 依赖引用本包：
+
+   ```json
+   "dsh-ssh-manager": "link:../../ssh-manager/pkg"
+   ```
+
+   用 `link:` 而不是 `file:`：`file:` 会按 `files` 白名单打一份**过滤后的副本**放进
+   `node_modules`，`link:` 则是一个直指源码的软链接——改 `lib/`、改 patch 都即时生效，
+   也不会被白名单吃掉文件（见下）。
 2. `~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles` 里列出 `dsh-ssh-manager`
 3. 本包 `package.json` 的 `dsh.bundle.patch` 指向 `cordis.patch.yml`，那一行把
    `id: ssh-manager` 插进宿主 composition；`dsh.client` 声明让浏览器半部分
@@ -28,6 +36,29 @@ SSH 主机管理器，作为 DeepSeek Harness 的 **profile bundle** 常驻在 w
 `import { defineTool } from '@deepseek-ai/dsh-tools'`，而这个包通常放在 profile 之外
 （例如 `~/.dsh/ssh-manager/pkg`，再软链进 `profiles/web/node_modules`），Node 从真实
 路径向上走找不到 profile 的 node_modules，所以用这个软链把唯一的宿主依赖接上。
+
+## 打包注意：`files` 白名单会吃掉 patch 文件
+
+`dsh.bundle.patch` 指向的 `cordis.patch.yml` 必须出现在 `files` 白名单里。漏掉它时，
+本地源码目录一切正常，但任何一次打包（`npm pack`、git 安装、pnpm 的 `file:` 协议）
+生成的副本里都没有这个文件，profile 会在组装阶段直接抛错退出：
+
+```
+Error: dsh: failed to read overlay
+  .../node_modules/dsh-ssh-manager/cordis.patch.yml:
+  Error: ENOENT: no such file or directory
+```
+
+而且它是**延迟发作**的：加白名单的那一刻不会报错，要等下一次依赖安装重新生成副本才炸。
+
+改完 `files` 或 `dsh.*` 之后跑一遍守卫：
+
+```sh
+npm run check        # node scripts/check-manifest.mjs
+```
+
+它检查 manifest 引用的每个路径（`main`、`exports`、`dsh.bundle.patch`）都存在、
+且都被 `files` 覆盖，不满足就非零退出。
 
 ## 自检命令
 

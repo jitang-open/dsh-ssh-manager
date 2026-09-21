@@ -13,7 +13,8 @@
   },
   "files": [
     "lib",
-    "README.md"
+    "README.md",
+    "cordis.patch.yml"
   ],
   "dsh": {
     "bundle": {
@@ -31,5 +32,8 @@
   ],
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "check": "node scripts/check-manifest.mjs"
   }
 }
