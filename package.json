@@ -1,0 +1,35 @@
+{
+  "name": "dsh-ssh-manager",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SSH 主机管理器：会话标题栏右侧入口 + 全高浮层面板，保存远程主机并在其上执行命令。",
+  "type": "module",
+  "license": "MIT",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "ssh"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  }
+}

@@ -1,0 +1,6 @@
+# Mount the SSH manager when this package is registered as a DeepSeek Harness
+# profile bundle. The browser half needs no row here: a package declaring
+# `dsh.client` is scanned from this loader entry and served automatically.
+- insert:
+    - id: ssh-manager
+      name: dsh-ssh-manager
