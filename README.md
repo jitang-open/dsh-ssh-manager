@@ -9,6 +9,12 @@ SSH 主机管理器，作为 DeepSeek Harness 的 **profile bundle** 常驻在 w
 | `lib/index.js` | 宿主半部分：清单读写（`~/.dsh/ssh-manager/hosts.json`）、六个 loopback-only 的 `/api/ssh-manager/*` 端点、两个模型工具 `ssh_hosts` / `ssh_run`。SSH 一律走 `execFile('ssh', argv)`，不拼 shell 字符串，所以用户名、私钥路径、远程命令都不需要引号转义 |
 | `lib/client.js` | 浏览器半部分：手写 `__ModuleLoader__` bundle（无构建步骤），会话标题栏右侧的「SSH 管理」按钮 + 全高浮层面板 |
 
+## 首次运行
+
+包里**没有任何内置主机**：清单文件不存在时会写入一个空清单，然后在面板里用
+「＋ 新增主机」添加。主机记录属于个人基础设施（地址、用户名、私钥路径），
+所以这个包不带任何默认值，`lib/client.js` 里的表单占位符也都是通用示例。
+
 ## 它是怎么被装上的
 
 1. 包目录软链进 profile：`~/.dsh/profiles/web/node_modules/dsh-ssh-manager` → 本目录
@@ -19,9 +25,9 @@ SSH 主机管理器，作为 DeepSeek Harness 的 **profile bundle** 常驻在 w
 4. 重启 `dsh web` 后生效（bundle 列表在启动时读取）
 
 `node_modules/@deepseek-ai/dsh-tools` 是本目录内的解析软链。宿主半部分需要
-`import { defineTool } from '@deepseek-ai/dsh-tools'`，而包的实体在
-`~/.dsh/ssh-manager/pkg`，Node 从真实路径向上走找不到 profile 的 node_modules，
-所以用这个软链把唯一的宿主依赖接上。
+`import { defineTool } from '@deepseek-ai/dsh-tools'`，而这个包通常放在 profile 之外
+（例如 `~/.dsh/ssh-manager/pkg`，再软链进 `profiles/web/node_modules`），Node 从真实
+路径向上走找不到 profile 的 node_modules，所以用这个软链把唯一的宿主依赖接上。
 
 ## 自检命令
 
