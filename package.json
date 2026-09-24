@@ -1,6 +1,6 @@
 {
   "name": "dsh-ssh-manager",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "private": true,
   "description": "SSH 主机管理器：会话标题栏右侧入口 + 全高浮层面板，保存远程主机并在其上执行命令。",
   "type": "module",

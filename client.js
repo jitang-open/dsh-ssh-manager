@@ -24,7 +24,7 @@ window.__ModuleLoader__.load({
       '.dsh-ssh-btn{appearance:none;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border-radius:8px;padding:5px 10px;font-size:12px;cursor:pointer;font-family:inherit;white-space:nowrap}',
       '.dsh-ssh-btn:hover{background:var(--dsw-alias-bg-layer-2)}',
       '.dsh-ssh-btn:disabled{opacity:.5;cursor:default}',
-      '.dsh-ssh-btn.is-primary{background:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary);color:#fff}',
+      '.dsh-ssh-btn.is-primary{background:var(--dsw-alias-label-primary);border-color:transparent;color:var(--dsw-alias-bg-layer-3,var(--dsw-alias-bg-base));font-weight:500}',
       '.dsh-ssh-btn.is-danger{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary)}',
       '.dsh-ssh-body{display:flex;flex:1;min-height:0}',
       '.dsh-ssh-list{width:272px;flex:none;border-right:1px solid var(--dsw-alias-border-l1);overflow:auto;padding:10px;display:flex;flex-direction:column;gap:8px;box-sizing:border-box}',
