@@ -44,6 +44,8 @@ function referencedPaths(pkg) {
     .map((path) => path.replace(/^\.\//, ''))
     // npm always ships package.json itself, so `files` can never filter it out.
     .filter((path) => path !== 'package.json')
+    // Glob entries (`./locale/*.json`) name a family, not one file.
+    .filter((path) => !path.includes('*'))
 }
 
 /**

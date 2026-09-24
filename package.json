@@ -1,28 +1,39 @@
 {
   "name": "dsh-ssh-manager",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "SSH 主机管理器：会话标题栏右侧入口 + 全高浮层面板，保存远程主机并在其上执行命令。",
   "type": "module",
   "license": "MIT",
-  "main": "lib/index.js",
+  "icon": "./icon.svg",
   "exports": {
-    ".": "./lib/index.js",
-    "./client": "./lib/client.js",
-    "./package.json": "./package.json"
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
   },
   "files": [
-    "lib",
-    "README.md",
-    "cordis.patch.yml"
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "icon.svg",
+    "locale/*.json",
+    "README.md"
   ],
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
     },
     "client": {
-      "platform": "web"
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
     }
+  },
+  "scripts": {
+    "check": "node scripts/check-manifest.mjs"
   },
   "keywords": [
     "deepseek-harness",
@@ -32,8 +43,5 @@
   ],
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
-  },
-  "scripts": {
-    "check": "node scripts/check-manifest.mjs"
   }
 }

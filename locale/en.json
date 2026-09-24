@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "SSH Manager",
+    "description": "A button at the right of the session header opens a full-height floating panel: keep remote hosts, test connections, probe them, run commands on them — and expose the inventory to the model as the ssh_hosts / ssh_run tools."
+  }
+}

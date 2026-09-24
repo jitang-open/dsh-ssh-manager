@@ -5,10 +5,12 @@
  * loopback-only endpoints under `/api/ssh-manager` for the browser half, and
  * registers two model-facing tools (`ssh_hosts`, `ssh_run`).
  *
- * The inventory is the shared, cross-session fact; the tools and the panel are
- * two faces over it. Everything SSH runs through `execFile('ssh', argv)` — no
- * shell string is ever built, so user names, key paths and remote commands need
- * no quoting.
+ * Imports nothing from the Harness: a profile bundle resolves only `node:`
+ * builtins and its own relative files, so tool definitions are written as plain
+ * JSON-Schema objects instead of going through a DSL helper.
+ *
+ * Everything SSH runs through `execFile('ssh', argv)` — no shell string is ever
+ * built, so user names, key paths and remote commands need no quoting.
  *
  * @module dsh-ssh-manager
  */
@@ -16,13 +18,9 @@ import { execFile } from 'node:child_process'
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { defineTool } from '@deepseek-ai/dsh-tools'
-
-/** Loader identity of this plugin. */
-const name = 'ssh-manager'
 
 /** Hard dependencies: the HTTP carrier and the tool registry. */
-const inject = ['webServer', 'tools']
+export const inject = ['webServer', 'tools']
 
 /** Route namespace owned by this plugin. */
 const API_PREFIX = '/api/ssh-manager'
@@ -92,7 +90,7 @@ function clampTimeout(value) {
  * Deliberately empty: host records are personal infrastructure (addresses, user
  * names, key paths), so this package ships none. A fresh install starts with an
  * empty list and the panel's own add-host form; the real inventory lives only in
- * the store file below.
+ * the store file above.
  * @returns the hosts to seed.
  */
 function seedHosts() {
@@ -218,15 +216,16 @@ function sshArgv(item, command) {
  * @param item - stored host record.
  * @param command - remote command.
  * @param timeoutMs - cooperative timeout.
+ * @param signal - optional cancellation from the caller.
  * @returns the outcome, including both streams and the elapsed time.
  */
-function execRemote(item, command, timeoutMs) {
+function execRemote(item, command, timeoutMs, signal) {
   return new Promise((resolve) => {
     const started = Date.now()
     execFile(
       'ssh',
       sshArgv(item, command),
-      { timeout: timeoutMs, maxBuffer: MAX_OUTPUT_BYTES, encoding: 'utf8' },
+      { timeout: timeoutMs, maxBuffer: MAX_OUTPUT_BYTES, encoding: 'utf8', signal },
       (error, stdout, stderr) => {
         const failed = error !== null
         const exitCode = !failed ? 0 : (typeof error.code === 'number' ? error.code : -1)
@@ -312,11 +311,121 @@ function route(handler) {
   }
 }
 
+/** Model-facing schema of one host row. */
+const HOST_ROW_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['id', 'name', 'target', 'kind', 'keyPath', 'note'],
+  properties: {
+    id: { type: 'string' },
+    name: { type: 'string' },
+    target: { type: 'string' },
+    kind: { type: 'string' },
+    keyPath: { type: 'string' },
+    note: { type: 'string' }
+  }
+}
+
+/** `ssh_hosts` definition; plain JSON Schema, no Harness import. */
+const HOSTS_TOOL = {
+  name: 'ssh_hosts',
+  description: '列出 SSH 管理器中保存的远程主机（腾讯云服务器、Windows 电脑等）：名称、用户名、地址、端口、系统类型、私钥路径与用途备注。需要用 ssh_run 在远程执行命令前，先用它确认主机 id。',
+  parameters: { type: 'object', properties: {}, additionalProperties: false },
+  output: {
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['storePath', 'hosts'],
+      properties: {
+        storePath: { type: 'string' },
+        hosts: { type: 'array', items: HOST_ROW_SCHEMA }
+      }
+    },
+    render: (_args, value) => {
+      const lines = [`已保存 ${value.hosts.length} 台 SSH 主机（清单文件：${value.storePath}）`]
+      for (const item of value.hosts) {
+        lines.push(`- ${item.name}  id=${item.id}  ${item.target}  ${item.kind}${item.note === '' ? '' : `  # ${item.note}`}`)
+      }
+      return [{ type: 'text', text: lines.join('\n') }]
+    }
+  },
+  execute: async () => {
+    const data = await readStore()
+    return {
+      storePath: STORE_PATH,
+      hosts: data.hosts.map((item) => ({
+        id: item.id,
+        name: item.name,
+        target: `${item.user}@${item.host}:${item.port}`,
+        kind: item.kind,
+        keyPath: item.keyPath,
+        note: item.note
+      }))
+    }
+  }
+}
+
+/** `ssh_run` definition; plain JSON Schema, no Harness import. */
+const RUN_TOOL = {
+  name: 'ssh_run',
+  description: '在 SSH 管理器保存的远程主机上执行一条命令并返回输出。host 参数传主机 id 或名称（可先用 ssh_hosts 查看，例如 tencent-cloud 或 腾讯云服务器）。Windows 主机的命令会自动切换 UTF-8 代码页。',
+  parameters: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['host', 'command'],
+    properties: {
+      host: { type: 'string', description: '主机 id 或名称，例如 tencent-cloud / windows-pc / 腾讯云服务器' },
+      command: { type: 'string', description: '要在远程主机上执行的命令' },
+      timeoutMs: { type: 'integer', description: '超时毫秒数，默认 60000，最大 300000' }
+    }
+  },
+  output: {
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['host', 'target', 'command', 'exitCode', 'timedOut', 'ms', 'stdout', 'stderr', 'truncated'],
+      properties: {
+        host: { type: 'string' },
+        target: { type: 'string' },
+        command: { type: 'string' },
+        exitCode: { type: 'integer' },
+        timedOut: { type: 'boolean' },
+        ms: { type: 'integer' },
+        stdout: { type: 'string' },
+        stderr: { type: 'string' },
+        truncated: { type: 'boolean' }
+      }
+    },
+    render: (_args, value) => {
+      const lines = [`$ ssh ${value.target}  # ${value.host}`, `$ ${value.command}`, '', value.stdout === '' ? '(无标准输出)' : value.stdout]
+      if (value.stderr !== '') lines.push('', '[stderr]', value.stderr)
+      lines.push('', `[退出码 ${value.exitCode} · ${value.ms} ms${value.timedOut ? ' · 已超时' : ''}${value.truncated ? ' · 输出已截断' : ''}]`)
+      return [{ type: 'text', text: lines.join('\n') }]
+    }
+  },
+  execute: async (args, exec) => {
+    const data = await readStore()
+    const item = findHost(data, args?.host)
+    const result = await execRemote(item, textOf(args?.command), clampTimeout(args?.timeoutMs), exec?.signal)
+    return {
+      host: result.name,
+      target: result.target,
+      command: result.command,
+      exitCode: result.exitCode,
+      timedOut: result.timedOut,
+      ms: result.ms,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      truncated: result.truncated
+    }
+  }
+}
+
 /**
  * Mount the SSH manager.
  * @param ctx - the host context carrying `webServer` and `tools`.
  */
-function apply(ctx) {
+export function apply(ctx) {
   const list = route(async () => {
     const data = await readStore()
     return { ok: true, storePath: STORE_PATH, hosts: data.hosts.map(publicHost) }
@@ -385,111 +494,8 @@ function apply(ctx) {
   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/probe`, handler: probe }), 'ssh-manager: probe route')
   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/exec`, handler: exec }), 'ssh-manager: exec route')
 
-  const hostsTool = defineTool({
-    name: 'ssh_hosts',
-    description: '列出 SSH 管理器中保存的远程主机（腾讯云服务器、Windows 电脑等）：名称、用户名、地址、端口、系统类型、私钥路径与用途备注。需要用 ssh_run 在远程执行命令前，先用它确认主机 id。',
-    parameters: {},
-    output: {
-      schema: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          storePath: { type: 'string', required: true },
-          hosts: {
-            type: 'array',
-            required: true,
-            items: {
-              type: 'object',
-              additionalProperties: false,
-              properties: {
-                id: { type: 'string', required: true },
-                name: { type: 'string', required: true },
-                target: { type: 'string', required: true },
-                kind: { type: 'string', required: true },
-                keyPath: { type: 'string', required: true },
-                note: { type: 'string', required: true }
-              }
-            }
-          }
-        }
-      },
-      render: (_args, value) => {
-        const lines = [`已保存 ${value.hosts.length} 台 SSH 主机（清单文件：${value.storePath}）`]
-        for (const item of value.hosts) {
-          lines.push(`- ${item.name}  id=${item.id}  ${item.target}  ${item.kind}${item.note === '' ? '' : `  # ${item.note}`}`)
-        }
-        return [{ type: 'text', text: lines.join('\n') }]
-      }
-    },
-    execute: async () => {
-      const data = await readStore()
-      return {
-        storePath: STORE_PATH,
-        hosts: data.hosts.map((item) => ({
-          id: item.id,
-          name: item.name,
-          target: `${item.user}@${item.host}:${item.port}`,
-          kind: item.kind,
-          keyPath: item.keyPath,
-          note: item.note
-        }))
-      }
-    }
-  })
-
-  const runTool = defineTool({
-    name: 'ssh_run',
-    description: '在 SSH 管理器保存的远程主机上执行一条命令并返回输出。host 参数传主机 id 或名称（可先用 ssh_hosts 查看，例如 tencent-cloud 或 腾讯云服务器）。Windows 主机的命令会自动切换 UTF-8 代码页。',
-    parameters: {
-      host: { type: 'string', required: true, description: '主机 id 或名称，例如 tencent-cloud / windows-pc / 腾讯云服务器' },
-      command: { type: 'string', required: true, description: '要在远程主机上执行的命令' },
-      timeoutMs: { type: 'integer', description: '超时毫秒数，默认 60000，最大 300000' }
-    },
-    output: {
-      schema: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          host: { type: 'string', required: true },
-          target: { type: 'string', required: true },
-          command: { type: 'string', required: true },
-          exitCode: { type: 'integer', required: true },
-          timedOut: { type: 'boolean', required: true },
-          ms: { type: 'integer', required: true },
-          stdout: { type: 'string', required: true },
-          stderr: { type: 'string', required: true },
-          truncated: { type: 'boolean', required: true }
-        }
-      },
-      render: (_args, value) => {
-        const lines = [`$ ssh ${value.target}  # ${value.host}`, `$ ${value.command}`, '', value.stdout === '' ? '(无标准输出)' : value.stdout]
-        if (value.stderr !== '') lines.push('', '[stderr]', value.stderr)
-        lines.push('', `[退出码 ${value.exitCode} · ${value.ms} ms${value.timedOut ? ' · 已超时' : ''}${value.truncated ? ' · 输出已截断' : ''}]`)
-        return [{ type: 'text', text: lines.join('\n') }]
-      }
-    },
-    execute: async (args) => {
-      const data = await readStore()
-      const item = findHost(data, args.host)
-      const result = await execRemote(item, args.command, clampTimeout(args.timeoutMs))
-      return {
-        host: result.name,
-        target: result.target,
-        command: result.command,
-        exitCode: result.exitCode,
-        timedOut: result.timedOut,
-        ms: result.ms,
-        stdout: result.stdout,
-        stderr: result.stderr,
-        truncated: result.truncated
-      }
-    }
-  })
-
-  ctx.effect(() => ctx.tools.register(hostsTool), 'ssh-manager: ssh_hosts tool')
-  ctx.effect(() => ctx.tools.register(runTool), 'ssh-manager: ssh_run tool')
+  ctx.effect(() => ctx.tools.register(HOSTS_TOOL), 'ssh-manager: ssh_hosts tool')
+  ctx.effect(() => ctx.tools.register(RUN_TOOL), 'ssh-manager: ssh_run tool')
 
   console.log(`[ssh-manager] mounted; inventory at ${STORE_PATH}`)
 }
-
-export { API_PREFIX, STORE_PATH, apply, inject, name }
