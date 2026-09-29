@@ -15,6 +15,9 @@ window.__ModuleLoader__.load({
     /** Route namespace owned by the server half. */
     const API = '/api/ssh-manager'
 
+    /** Repo the version chip links to. */
+    const REPO_URL = 'https://github.com/jitang-open/dsh-ssh-manager'
+
     const CSS = [
       '.dsh-ssh-root{display:flex;flex-direction:column;height:100%;min-height:0;overflow:hidden;box-sizing:border-box;color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5}',
       '.dsh-ssh-head{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid var(--dsw-alias-border-l1);flex:none;flex-wrap:wrap}',
@@ -64,6 +67,9 @@ window.__ModuleLoader__.load({
       '.dsh-ssh-util:hover{background:var(--dsw-alias-bg-layer-2)}',
       '.dsh-ssh-util.is-open{border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-bg-layer-2)}',
       '.dsh-ssh-util-count{color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}',
+      '.dsh-ssh-ver{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;padding:3px 9px;font-size:11px;color:var(--dsw-alias-label-secondary);white-space:nowrap;text-decoration:none}',
+      '.dsh-ssh-ver.is-new{border-color:var(--dsw-alias-state-warn-primary);color:var(--dsw-alias-state-warn-primary)}',
+      '.dsh-ssh-ver.is-error{opacity:.7}',
       '.dsh-ssh-overlay{position:fixed;top:84px;right:16px;bottom:16px;width:min(900px,calc(100vw - 32px));pointer-events:auto;z-index:60;display:flex;flex-direction:column;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l2);border-radius:16px;box-shadow:0 24px 64px rgba(0,0,0,.34);overflow:hidden}',
       '.dsh-ssh-panel{display:flex;flex-direction:column;flex:1;min-height:0}'
     ].join('')
@@ -188,6 +194,8 @@ window.__ModuleLoader__.load({
       const [notice, setNotice] = React.useState(null)
       const [storePath, setStorePath] = React.useState('')
       const [confirmId, setConfirmId] = React.useState('')
+      const [version, setVersion] = React.useState(null)
+      const [checking, setChecking] = React.useState(false)
       const statusMirror = {}
 
       const selected = hosts.find((item) => item.id === selectedId) || null
@@ -235,6 +243,18 @@ window.__ModuleLoader__.load({
       }
 
       React.useEffect(() => { load() }, [])
+
+      function checkVersion(force) {
+        setChecking(true)
+        return api('GET', '/version' + (force ? '?force=1' : '')).then((result) => {
+          setVersion(result)
+          return result
+        }).catch((error) => {
+          setVersion({ status: 'error', current: '', latest: '', error: String(error?.message ?? error), url: REPO_URL })
+        }).finally(() => setChecking(false))
+      }
+
+      React.useEffect(() => { checkVersion(false) }, [])
 
       function openEditor(item) {
         setNotice(null)
@@ -446,12 +466,35 @@ window.__ModuleLoader__.load({
         )
       }
 
+      function renderVersion() {
+        const report = version
+        if (report === null) return null
+        if (report.status === 'outdated') {
+          return h('a', {
+            className: 'dsh-ssh-ver is-new',
+            href: report.url || REPO_URL,
+            target: '_blank',
+            rel: 'noreferrer',
+            title: '当前 v' + report.current + '，仓库里已经是 v' + report.latest
+          }, '有新版 v' + report.latest)
+        }
+        if (report.status === 'error') {
+          return h('span', { className: 'dsh-ssh-ver is-error', title: report.error }, '更新检查失败')
+        }
+        if (report.status === 'unknown' || report.current === '') {
+          return h('span', { className: 'dsh-ssh-ver' }, '版本未知')
+        }
+        return h('span', { className: 'dsh-ssh-ver', title: '当前 v' + report.current + ' 已是最新' }, '已是最新')
+      }
+
       return h('div', { className: 'dsh-ssh-root' },
         h('div', { className: 'dsh-ssh-head' },
           h('div', { className: 'dsh-ssh-grow' },
             h('h2', { className: 'dsh-ssh-title' }, 'SSH 管理器'),
-            h('div', { className: 'dsh-ssh-sub', title: storePath }, hosts.length + ' 台主机 · 清单 ' + (storePath === '' ? '~/.dsh/ssh-manager/hosts.json' : storePath))
+            h('div', { className: 'dsh-ssh-sub', title: storePath }, (version !== null && version.current !== '' ? 'v' + version.current + ' · ' : '') + hosts.length + ' 台主机 · 清单 ' + (storePath === '' ? '~/.dsh/ssh-manager/hosts.json' : storePath))
           ),
+          renderVersion(),
+          h('button', { className: 'dsh-ssh-btn', disabled: checking, onClick: () => checkVersion(true) }, checking ? '检测中…' : '检测更新'),
           h('button', { className: 'dsh-ssh-btn', onClick: () => openEditor(null) }, '＋ 新增主机'),
           h('button', { className: 'dsh-ssh-btn', disabled: busy || hosts.length === 0, onClick: () => { for (const item of hosts) testOne(item.id) } }, '测试全部'),
           h('button', { className: 'dsh-ssh-btn', disabled: busy, onClick: () => { load() } }, '刷新'),

@@ -1,7 +1,7 @@
 /**
  * dsh-ssh-manager — server half.
  *
- * Owns the SSH inventory at `~/.dsh/ssh-manager/hosts.json`, serves six
+ * Owns the SSH inventory at `~/.dsh/ssh-manager/hosts.json`, serves seven
  * loopback-only endpoints under `/api/ssh-manager` for the browser half, and
  * registers two model-facing tools (`ssh_hosts`, `ssh_run`).
  *
@@ -28,6 +28,11 @@ const API_PREFIX = '/api/ssh-manager'
 /** Durable inventory path. */
 const STORE_PATH = join(homedir(), '.dsh', 'ssh-manager', 'hosts.json')
 
+/** Repo whose published manifest the update check reads. */
+const REPO_URL = 'https://github.com/jitang-open/dsh-ssh-manager'
+const MANIFEST_API = 'https://api.github.com/repos/jitang-open/dsh-ssh-manager/contents/package.json'
+const UPDATE_CACHE_MS = 10 * 60 * 1000
+
 const STORE_VERSION = 1
 const DEFAULT_TIMEOUT_MS = 60000
 const MAX_TIMEOUT_MS = 300000
@@ -35,6 +40,12 @@ const TEST_TIMEOUT_MS = 25000
 const CONNECT_TIMEOUT_SEC = 10
 const MAX_OUTPUT_BYTES = 512 * 1024
 const MAX_BODY_BYTES = 256 * 1024
+
+/** Cached own version, filled on first read. */
+let ownVersion = ''
+
+/** Cached update report, so a panel open does not re-spend the rate limit. */
+let updateCache = null
 
 /**
  * Trim a possibly-absent string field.
@@ -311,6 +322,75 @@ function route(handler) {
   }
 }
 
+/**
+ * This package's own version, read once from its manifest.
+ * @returns the version string, or `'unknown'` when the manifest is unreadable.
+ */
+async function readOwnVersion() {
+  if (ownVersion !== '') return ownVersion
+  try {
+    const text = await readFile(new URL('./package.json', import.meta.url), 'utf8')
+    ownVersion = textOf(JSON.parse(text).version) || 'unknown'
+  } catch {
+    ownVersion = 'unknown'
+  }
+  return ownVersion
+}
+
+/**
+ * Compare two dotted versions.
+ * @param a - left version.
+ * @param b - right version.
+ * @returns 1 when `a` is newer, -1 when older, 0 when equal.
+ */
+function compareVersions(a, b) {
+  const segments = (value) => String(value).replace(/^v/, '').split(/[.+-]/).map((part) => {
+    const number = Number.parseInt(part, 10)
+    return Number.isFinite(number) ? number : 0
+  })
+  const left = segments(a)
+  const right = segments(b)
+  const length = Math.max(left.length, right.length)
+  for (let index = 0; index < length; index += 1) {
+    const mine = left[index] ?? 0
+    const theirs = right[index] ?? 0
+    if (mine !== theirs) return mine > theirs ? 1 : -1
+  }
+  return 0
+}
+
+/**
+ * Report the installed version and the version published in the repo.
+ *
+ * One GitHub API read per cache window: the endpoint is loopback-only, but an
+ * unauthenticated caller still shares a 60/hour rate limit.
+ * @param force - bypass the in-memory cache (the panel's explicit button).
+ * @returns the report; `status` is `current`, `outdated`, `unknown` or `error`.
+ */
+async function checkUpdate(force) {
+  const current = await readOwnVersion()
+  if (!force && updateCache !== null && Date.now() - updateCache.at < UPDATE_CACHE_MS) {
+    return updateCache.value
+  }
+  const report = { current, latest: '', status: 'current', url: REPO_URL, checkedAt: nowIso(), error: '' }
+  try {
+    const response = await fetch(MANIFEST_API, {
+      headers: { accept: 'application/vnd.github+json', 'user-agent': 'dsh-ssh-manager' },
+      signal: AbortSignal.timeout(10000)
+    })
+    if (!response.ok) throw new Error(`GitHub HTTP ${response.status}`)
+    const payload = await response.json()
+    const manifest = JSON.parse(Buffer.from(String(payload.content ?? ''), 'base64').toString('utf8'))
+    report.latest = textOf(manifest.version)
+    report.status = report.latest === '' ? 'unknown' : (compareVersions(report.latest, current) > 0 ? 'outdated' : 'current')
+  } catch (error) {
+    report.status = 'error'
+    report.error = String(error?.message ?? error)
+  }
+  updateCache = { at: Date.now(), value: report }
+  return report
+}
+
 /** Model-facing schema of one host row. */
 const HOST_ROW_SCHEMA = {
   type: 'object',
@@ -492,7 +572,13 @@ export function apply(ctx) {
   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/remove`, handler: remove }), 'ssh-manager: remove route')
   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/test`, handler: test }), 'ssh-manager: test route')
   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/probe`, handler: probe }), 'ssh-manager: probe route')
+  const version = route(async (req) => {
+    const force = String(req.url ?? '').includes('force=1')
+    return { ok: true, ...(await checkUpdate(force)) }
+  })
+
   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/exec`, handler: exec }), 'ssh-manager: exec route')
+  ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/version`, handler: version }), 'ssh-manager: version route')
 
   ctx.effect(() => ctx.tools.register(HOSTS_TOOL), 'ssh-manager: ssh_hosts tool')
   ctx.effect(() => ctx.tools.register(RUN_TOOL), 'ssh-manager: ssh_run tool')
