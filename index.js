@@ -1,8 +1,9 @@
 /**
  * dsh-ssh-manager — server half.
  *
- * Owns the SSH inventory at `~/.dsh/ssh-manager/hosts.json`, serves seven
- * loopback-only endpoints under `/api/ssh-manager` for the browser half, and
+ * Owns the SSH inventory and the plugin's preferences at
+ * `~/.dsh/ssh-manager/hosts.json`, serves nine loopback-only endpoints under
+ * `/api/ssh-manager` for the browser half, and
  * registers two model-facing tools (`ssh_hosts`, `ssh_run`).
  *
  * Imports nothing from the Harness: a profile bundle resolves only `node:`
@@ -34,6 +35,9 @@ const MANIFEST_API = 'https://api.github.com/repos/jitang-open/dsh-ssh-manager/c
 const UPDATE_CACHE_MS = 10 * 60 * 1000
 
 const STORE_VERSION = 1
+
+/** Defaults for the plugin's own preferences. */
+const DEFAULT_SETTINGS = { autoCheckUpdate: true }
 const DEFAULT_TIMEOUT_MS = 60000
 const MAX_TIMEOUT_MS = 300000
 const TEST_TIMEOUT_MS = 25000
@@ -109,13 +113,26 @@ function seedHosts() {
 }
 
 /**
+ * Normalize the plugin's preferences, filling defaults for absent fields.
+ * @param value - the stored `settings` object, however malformed.
+ * @returns a complete settings object.
+ */
+function normalizeSettings(value) {
+  const raw = isObject(value) ? value : {}
+  return { autoCheckUpdate: raw.autoCheckUpdate !== false }
+}
+
+/**
  * Read the inventory, seeding it on first use.
  * @returns the decoded inventory document.
  */
 async function readStore() {
   try {
     const parsed = JSON.parse(await readFile(STORE_PATH, 'utf8'))
-    if (isObject(parsed) && Array.isArray(parsed.hosts)) return parsed
+    if (isObject(parsed) && Array.isArray(parsed.hosts)) {
+      parsed.settings = normalizeSettings(parsed.settings)
+      return parsed
+    }
   } catch {
     // Absent or unreadable: fall through to the seed below.
   }
@@ -366,6 +383,7 @@ function compareVersions(a, b) {
  * unauthenticated caller still shares a 60/hour rate limit.
  * @param force - bypass the in-memory cache (the panel's explicit button).
  * @returns the report; `status` is `current`, `outdated`, `unknown` or `error`.
+ *   The `/version?local=1` mode reports `local` instead and skips this path.
  */
 async function checkUpdate(force) {
   const current = await readOwnVersion()
@@ -572,12 +590,33 @@ export function apply(ctx) {
   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/remove`, handler: remove }), 'ssh-manager: remove route')
   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/test`, handler: test }), 'ssh-manager: test route')
   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/probe`, handler: probe }), 'ssh-manager: probe route')
+  const settingsGet = route(async () => {
+    const data = await readStore()
+    return { ok: true, settings: normalizeSettings(data.settings) }
+  })
+
+  const settingsSave = route(async (req) => {
+    const body = await readJsonBody(req)
+    const data = await readStore()
+    const merged = normalizeSettings({ ...normalizeSettings(data.settings), ...(isObject(body?.settings) ? body.settings : {}) })
+    await writeStore({ version: STORE_VERSION, updatedAt: nowIso(), settings: merged, hosts: data.hosts })
+    return { ok: true, settings: merged }
+  })
+
   const version = route(async (req) => {
-    const force = String(req.url ?? '').includes('force=1')
+    const query = String(req.url ?? '')
+    // `local=1` reports this package's own version without touching the network,
+    // so the panel can show a version while automatic checking is switched off.
+    if (query.includes('local=1')) {
+      return { ok: true, current: await readOwnVersion(), latest: '', status: 'local', url: REPO_URL, checkedAt: '', error: '' }
+    }
+    const force = query.includes('force=1')
     return { ok: true, ...(await checkUpdate(force)) }
   })
 
   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/exec`, handler: exec }), 'ssh-manager: exec route')
+  ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/settings`, handler: settingsGet }), 'ssh-manager: settings read route')
+  ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/settings/save`, handler: settingsSave }), 'ssh-manager: settings save route')
   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/version`, handler: version }), 'ssh-manager: version route')
 
   ctx.effect(() => ctx.tools.register(HOSTS_TOOL), 'ssh-manager: ssh_hosts tool')

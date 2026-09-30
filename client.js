@@ -70,6 +70,8 @@ window.__ModuleLoader__.load({
       '.dsh-ssh-ver{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;padding:3px 9px;font-size:11px;color:var(--dsw-alias-label-secondary);white-space:nowrap;text-decoration:none}',
       '.dsh-ssh-ver.is-new{border-color:var(--dsw-alias-state-warn-primary);color:var(--dsw-alias-state-warn-primary)}',
       '.dsh-ssh-ver.is-error{opacity:.7}',
+      '.dsh-ssh-check{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--dsw-alias-label-secondary);white-space:nowrap;cursor:pointer;user-select:none}',
+      '.dsh-ssh-check input{accent-color:var(--dsw-alias-brand-primary);cursor:pointer;margin:0}',
       '.dsh-ssh-overlay{position:fixed;top:84px;right:16px;bottom:16px;width:min(900px,calc(100vw - 32px));pointer-events:auto;z-index:60;display:flex;flex-direction:column;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l2);border-radius:16px;box-shadow:0 24px 64px rgba(0,0,0,.34);overflow:hidden}',
       '.dsh-ssh-panel{display:flex;flex-direction:column;flex:1;min-height:0}'
     ].join('')
@@ -196,6 +198,7 @@ window.__ModuleLoader__.load({
       const [confirmId, setConfirmId] = React.useState('')
       const [version, setVersion] = React.useState(null)
       const [checking, setChecking] = React.useState(false)
+      const [settings, setSettings] = React.useState(null)
       const statusMirror = {}
 
       const selected = hosts.find((item) => item.id === selectedId) || null
@@ -244,9 +247,28 @@ window.__ModuleLoader__.load({
 
       React.useEffect(() => { load() }, [])
 
-      function checkVersion(force) {
+      function loadSettings() {
+        return api('GET', '/settings').then((result) => {
+          const next = result && result.settings ? result.settings : { autoCheckUpdate: true }
+          setSettings(next)
+          // 关掉自动检查时只读本地版本号（不联网），手动按钮仍然做完整检查
+          return checkVersion(false, next.autoCheckUpdate === false)
+        }).catch(() => {
+          setSettings({ autoCheckUpdate: true })
+        })
+      }
+
+      function toggleAutoCheck(next) {
+        setSettings({ autoCheckUpdate: next })
+        api('POST', '/settings/save', { settings: { autoCheckUpdate: next } }).catch((error) => {
+          say('error', '保存设置失败：' + String(error?.message ?? error))
+        })
+      }
+
+      function checkVersion(force, localOnly) {
+        const query = localOnly === true ? '?local=1' : (force ? '?force=1' : '')
         setChecking(true)
-        return api('GET', '/version' + (force ? '?force=1' : '')).then((result) => {
+        return api('GET', '/version' + query).then((result) => {
           setVersion(result)
           return result
         }).catch((error) => {
@@ -254,7 +276,7 @@ window.__ModuleLoader__.load({
         }).finally(() => setChecking(false))
       }
 
-      React.useEffect(() => { checkVersion(false) }, [])
+      React.useEffect(() => { loadSettings() }, [])
 
       function openEditor(item) {
         setNotice(null)
@@ -481,6 +503,7 @@ window.__ModuleLoader__.load({
         if (report.status === 'error') {
           return h('span', { className: 'dsh-ssh-ver is-error', title: report.error }, '更新检查失败')
         }
+        if (report.status === 'local') return null
         if (report.status === 'unknown' || report.current === '') {
           return h('span', { className: 'dsh-ssh-ver' }, '版本未知')
         }
@@ -492,6 +515,14 @@ window.__ModuleLoader__.load({
           h('div', { className: 'dsh-ssh-grow' },
             h('h2', { className: 'dsh-ssh-title' }, 'SSH 管理器'),
             h('div', { className: 'dsh-ssh-sub', title: storePath }, (version !== null && version.current !== '' ? 'v' + version.current + ' · ' : '') + hosts.length + ' 台主机 · 清单 ' + (storePath === '' ? '~/.dsh/ssh-manager/hosts.json' : storePath))
+          ),
+          h('label', { className: 'dsh-ssh-check', title: '打开面板时自动检查更新；关掉后只显示版本号，检查交给旁边的按钮' },
+            h('input', {
+              type: 'checkbox',
+              checked: settings !== null && settings.autoCheckUpdate !== false,
+              onChange: (event) => toggleAutoCheck(event.target.checked)
+            }),
+            h('span', null, '自动检查')
           ),
           renderVersion(),
           h('button', { className: 'dsh-ssh-btn', disabled: checking, onClick: () => checkVersion(true) }, checking ? '检测中…' : '检测更新'),
