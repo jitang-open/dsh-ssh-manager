@@ -72,6 +72,16 @@ window.__ModuleLoader__.load({
       '.dsh-ssh-ver.is-error{opacity:.7}',
       '.dsh-ssh-check{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--dsw-alias-label-secondary);white-space:nowrap;cursor:pointer;user-select:none}',
       '.dsh-ssh-check input{accent-color:var(--dsw-alias-brand-primary);cursor:pointer;margin:0}',
+      '.dsh-ssh-set{display:flex;flex-direction:column;padding:2px 0;max-width:760px}',
+      '.dsh-ssh-sethead{font-size:16px;font-weight:600;margin:2px 0 8px}',
+      '.dsh-ssh-setrow{display:flex;align-items:center;gap:16px;padding:14px 0;border-bottom:1px solid var(--dsw-alias-border-l1)}',
+      '.dsh-ssh-setmain{flex:1;min-width:0}',
+      '.dsh-ssh-settitle{font-size:14px}',
+      '.dsh-ssh-setdesc{color:var(--dsw-alias-label-secondary);font-size:12px;margin-top:3px}',
+      '.dsh-ssh-setctl{flex:none;display:flex;align-items:center;gap:10px}',
+      '.dsh-ssh-setcheck{width:16px;height:16px;accent-color:var(--dsw-alias-brand-primary);cursor:pointer;margin:0}',
+      '.dsh-ssh-setselect{background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary);border-radius:8px;padding:5px 9px;font-size:12px;font-family:inherit;cursor:pointer}',
+      '.dsh-ssh-sethint{color:var(--dsw-alias-label-secondary);font-size:12px;padding-top:12px}',
       '.dsh-ssh-overlay{position:fixed;top:84px;right:16px;bottom:16px;width:min(900px,calc(100vw - 32px));pointer-events:auto;z-index:60;display:flex;flex-direction:column;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l2);border-radius:16px;box-shadow:0 24px 64px rgba(0,0,0,.34);overflow:hidden}',
       '.dsh-ssh-panel{display:flex;flex-direction:column;flex:1;min-height:0}'
     ].join('')
@@ -112,14 +122,18 @@ window.__ModuleLoader__.load({
       open: false,
       hosts: [],
       statuses: {},
+      settings: null,
+      version: null,
       listeners: [],
       snapshot() {
-        return { open: uiStore.open, hosts: uiStore.hosts, statuses: uiStore.statuses }
+        return { open: uiStore.open, hosts: uiStore.hosts, statuses: uiStore.statuses, settings: uiStore.settings, version: uiStore.version }
       },
       set(patch) {
         if (patch.open !== undefined) uiStore.open = patch.open
         if (patch.hosts !== undefined) uiStore.hosts = patch.hosts
         if (patch.statuses !== undefined) uiStore.statuses = patch.statuses
+        if (patch.settings !== undefined) uiStore.settings = patch.settings
+        if (patch.version !== undefined) uiStore.version = patch.version
         for (const listener of uiStore.listeners) listener()
       },
       subscribe(listener) {
@@ -127,6 +141,50 @@ window.__ModuleLoader__.load({
         return () => {
           uiStore.listeners = uiStore.listeners.filter((item) => item !== listener)
         }
+      }
+    }
+
+    /** Settings defaults, mirrored from the host half. */
+    const DEFAULT_SETTINGS = { autoCheckUpdate: true, autoTestHosts: true, connectTimeoutSec: 10 }
+
+    /** Read the plugin settings into the shared store. */
+    async function fetchSettings() {
+      try {
+        const result = await api('GET', '/settings')
+        const next = result && result.settings ? result.settings : DEFAULT_SETTINGS
+        uiStore.set({ settings: next })
+        return next
+      } catch {
+        uiStore.set({ settings: DEFAULT_SETTINGS })
+        return DEFAULT_SETTINGS
+      }
+    }
+
+    /** Persist a settings patch (optimistic, rolled back on failure). */
+    async function saveSettings(patch) {
+      uiStore.set({ settings: { ...(uiStore.settings || DEFAULT_SETTINGS), ...patch } })
+      try {
+        const result = await api('POST', '/settings/save', { settings: patch })
+        if (result && result.settings) uiStore.set({ settings: result.settings })
+        return result
+      } catch (error) {
+        await fetchSettings()
+        throw error
+      }
+    }
+
+    /** Run the version check into the shared store. */
+    async function checkVersion(force, localOnly) {
+      const query = localOnly === true ? '?local=1' : (force ? '?force=1' : '')
+      uiStore.set({ version: { status: 'checking' } })
+      try {
+        const result = await api('GET', '/version' + query)
+        uiStore.set({ version: result })
+        return result
+      } catch (error) {
+        const failed = { status: 'error', current: '', latest: '', error: String(error?.message ?? error), url: REPO_URL }
+        uiStore.set({ version: failed })
+        return failed
       }
     }
 
@@ -196,12 +254,18 @@ window.__ModuleLoader__.load({
       const [notice, setNotice] = React.useState(null)
       const [storePath, setStorePath] = React.useState('')
       const [confirmId, setConfirmId] = React.useState('')
-      const [version, setVersion] = React.useState(null)
-      const [checking, setChecking] = React.useState(false)
-      const [settings, setSettings] = React.useState(null)
       const statusMirror = {}
+      const snapshot = useUiStore()
+      const settings = snapshot.settings || DEFAULT_SETTINGS
+      const version = snapshot.version
+      const checking = version !== null && version.status === 'checking'
 
       const selected = hosts.find((item) => item.id === selectedId) || null
+
+      function latencyLabel(st) {
+        const ms = typeof st.latencyMs === 'number' ? st.latencyMs : st.ms
+        return '在线 · ' + ms + ' ms'
+      }
 
       function say(kind, text) {
         setNotice({ kind, text })
@@ -217,7 +281,7 @@ window.__ModuleLoader__.load({
         patchStatus(id, { state: 'testing' })
         return api('POST', '/test', { id }).then((result) => {
           const ok = result && result.ok === true
-          patchStatus(id, { state: ok ? 'ok' : 'fail', ms: result ? result.ms : 0, message: result ? result.message : '' })
+          patchStatus(id, { state: ok ? 'ok' : 'fail', ms: result ? result.ms : 0, latencyMs: result ? result.latencyMs : null, message: result ? result.message : '' })
           return result
         }).catch((error) => {
           patchStatus(id, { state: 'fail', message: String(error?.message ?? error) })
@@ -236,47 +300,32 @@ window.__ModuleLoader__.load({
       function load() {
         return api('GET', '/hosts').then((result) => {
           if (result && result.ok === false) { say('error', result.error || '读取主机清单失败'); return [] }
-          const list = applyList(result)
-          for (const item of list) testOne(item.id)
-          return list
+          return applyList(result)
         }).catch((error) => {
           say('error', '读取主机清单失败：' + String(error?.message ?? error))
           return []
         })
       }
 
-      React.useEffect(() => { load() }, [])
-
-      function loadSettings() {
-        return api('GET', '/settings').then((result) => {
-          const next = result && result.settings ? result.settings : { autoCheckUpdate: true }
-          setSettings(next)
-          // 关掉自动检查时只读本地版本号（不联网），手动按钮仍然做完整检查
-          return checkVersion(false, next.autoCheckUpdate === false)
-        }).catch(() => {
-          setSettings({ autoCheckUpdate: true })
+      React.useEffect(() => {
+        let alive = true
+        fetchSettings().then((next) => {
+          if (!alive) return
+          load().then((list) => {
+            if (!alive) return
+            if (next.autoTestHosts !== false) for (const item of list) testOne(item.id)
+          })
+          // 关掉自动检查时只读本地版本号（不联网），手动按钮仍做完整检查
+          checkVersion(false, next.autoCheckUpdate === false)
         })
-      }
+        return () => { alive = false }
+      }, [])
 
       function toggleAutoCheck(next) {
-        setSettings({ autoCheckUpdate: next })
-        api('POST', '/settings/save', { settings: { autoCheckUpdate: next } }).catch((error) => {
+        saveSettings({ autoCheckUpdate: next }).catch((error) => {
           say('error', '保存设置失败：' + String(error?.message ?? error))
         })
       }
-
-      function checkVersion(force, localOnly) {
-        const query = localOnly === true ? '?local=1' : (force ? '?force=1' : '')
-        setChecking(true)
-        return api('GET', '/version' + query).then((result) => {
-          setVersion(result)
-          return result
-        }).catch((error) => {
-          setVersion({ status: 'error', current: '', latest: '', error: String(error?.message ?? error), url: REPO_URL })
-        }).finally(() => setChecking(false))
-      }
-
-      React.useEffect(() => { loadSettings() }, [])
 
       function openEditor(item) {
         setNotice(null)
@@ -417,7 +466,7 @@ window.__ModuleLoader__.load({
             h(Dot, { state: st.state }),
             h('div', { className: 'dsh-ssh-grow' },
               h('div', { style: { fontSize: '16px', fontWeight: 600 } }, item.name),
-              h('div', { className: 'dsh-ssh-sub' }, st.state === 'ok' ? '在线 · ' + st.ms + ' ms' : (st.state === 'fail' ? '离线 · ' + String(st.message || '') : (st.state === 'testing' ? '测试中…' : (item.note || '未测试'))))
+              h('div', { className: 'dsh-ssh-sub' }, st.state === 'ok' ? latencyLabel(st) : (st.state === 'fail' ? '离线 · ' + String(st.message || '') : (st.state === 'testing' ? '测试中…' : (item.note || '未测试'))))
             ),
             h('span', { className: 'dsh-ssh-tag' }, item.kind === 'windows' ? 'Windows' : 'Linux')
           ),
@@ -503,7 +552,7 @@ window.__ModuleLoader__.load({
         if (report.status === 'error') {
           return h('span', { className: 'dsh-ssh-ver is-error', title: report.error }, '更新检查失败')
         }
-        if (report.status === 'local') return null
+        if (report.status === 'local' || report.status === 'checking') return null
         if (report.status === 'unknown' || report.current === '') {
           return h('span', { className: 'dsh-ssh-ver' }, '版本未知')
         }
@@ -547,7 +596,7 @@ window.__ModuleLoader__.load({
                   h('span', { className: 'dsh-ssh-tag' }, item.kind === 'windows' ? 'Windows' : 'Linux')
                 ),
                 h('div', { className: 'dsh-ssh-target' }, item.user + '@' + item.host + (item.port === 22 ? '' : ':' + item.port)),
-                st.state === 'ok' ? h('div', { className: 'dsh-ssh-sub' }, '在线 · ' + st.ms + ' ms') : null,
+                st.state === 'ok' ? h('div', { className: 'dsh-ssh-sub', title: st.latencyMs === null || st.latencyMs === undefined ? 'SSH 往返' : '网络 ' + st.latencyMs + ' ms · SSH 往返 ' + st.ms + ' ms' }, latencyLabel(st)) : null,
                 st.state === 'testing' ? h('div', { className: 'dsh-ssh-sub' }, '测试中…') : null,
                 st.state === 'fail' ? h('div', { className: 'dsh-ssh-sub', title: st.message }, '离线 · ' + String(st.message || '').slice(0, 42)) : null,
                 (item.tags || []).length === 0 ? null : h('div', { className: 'dsh-ssh-tags' }, item.tags.map((tag) =>
@@ -561,6 +610,82 @@ window.__ModuleLoader__.load({
             draft !== null ? renderEditor() : (selected === null ? h('div', { className: 'dsh-ssh-empty' }, '从左侧选择一台主机，或新增一台。') : renderDetail(selected))
           )
         )
+      )
+    }
+
+    /** The Settings → SSH 管理器 page (mirrors the panel's own controls). */
+    function SettingsPage() {
+      const snapshot = useUiStore()
+      const settings = snapshot.settings || DEFAULT_SETTINGS
+      const version = snapshot.version
+      const [notice, setNotice] = React.useState(null)
+      const checking = version !== null && version.status === 'checking'
+
+      React.useEffect(() => {
+        let alive = true
+        const ready = uiStore.settings === null ? fetchSettings() : Promise.resolve(uiStore.settings)
+        ready.then((next) => {
+          if (!alive) return
+          if (uiStore.version === null) checkVersion(false, next.autoCheckUpdate === false)
+        })
+        return () => { alive = false }
+      }, [])
+
+      function update(patch) {
+        setNotice(null)
+        saveSettings(patch).catch((error) => {
+          setNotice({ kind: 'error', text: '保存失败：' + String(error?.message ?? error) })
+        })
+      }
+
+      function row(title, desc, control) {
+        return h('div', { className: 'dsh-ssh-setrow' },
+          h('div', { className: 'dsh-ssh-setmain' },
+            h('div', { className: 'dsh-ssh-settitle' }, title),
+            desc ? h('div', { className: 'dsh-ssh-setdesc' }, desc) : null
+          ),
+          h('div', { className: 'dsh-ssh-setctl' }, control)
+        )
+      }
+
+      function toggle(checked, onChange) {
+        return h('input', {
+          type: 'checkbox',
+          className: 'dsh-ssh-setcheck',
+          checked: checked,
+          onChange: (event) => onChange(event.target.checked)
+        })
+      }
+
+      function versionText() {
+        if (version === null || version.status === 'checking') return '检测中…'
+        if (version.status === 'error') return '检查失败'
+        if (version.status === 'local') return 'v' + version.current
+        if (version.status === 'outdated') return 'v' + version.current + ' → 有新版 v' + version.latest
+        if (version.current === '') return '版本未知'
+        return 'v' + version.current + ' · 已是最新'
+      }
+
+      return h('div', { className: 'dsh-ssh-set' },
+        h('div', { className: 'dsh-ssh-sethead' }, 'SSH 管理器'),
+        notice === null ? null : h('div', { className: 'dsh-ssh-notice ' + notice.kind }, notice.text),
+        row('自动检查更新', '打开面板时自动问一次 GitHub；关掉后只读本地版本号，不联网',
+          toggle(settings.autoCheckUpdate !== false, (next) => update({ autoCheckUpdate: next }))),
+        row('打开面板时自动测试主机', '关掉后只列主机，测连接交给面板里的「测试全部」',
+          toggle(settings.autoTestHosts !== false, (next) => update({ autoTestHosts: next }))),
+        row('SSH 连接超时', 'ssh -o ConnectTimeout=N 的秒数（3–60），影响连接测试与所有远程命令',
+          h('select', {
+            className: 'dsh-ssh-setselect',
+            value: String(settings.connectTimeoutSec),
+            onChange: (event) => update({ connectTimeoutSec: Number(event.target.value) })
+          }, [5, 10, 15, 20, 30, 60].map((seconds) => h('option', { key: seconds, value: String(seconds) }, seconds + ' 秒')))),
+        row('版本', versionText(),
+          h('button', {
+            className: 'dsh-ssh-btn',
+            disabled: checking,
+            onClick: () => checkVersion(true, false)
+          }, checking ? '检测中…' : '检测更新')),
+        h('div', { className: 'dsh-ssh-sethint' }, '仓库：' + REPO_URL + '　·　主机清单：~/.dsh/ssh-manager/hosts.json')
       )
     }
 
@@ -590,6 +715,12 @@ window.__ModuleLoader__.load({
           order: 30,
           label: 'SSH 管理'
         }, Overlay))
+        ctx.slots.inject('settings.section', () => ctx.slots.register({
+          name: 'settings.section',
+          id: 'ssh-manager',
+          order: 30,
+          label: 'SSH 管理器'
+        }, SettingsPage))
       }
     }
   }

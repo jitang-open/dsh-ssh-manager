@@ -16,6 +16,7 @@
  * @module dsh-ssh-manager
  */
 import { execFile } from 'node:child_process'
+import { connect } from 'node:net'
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -37,7 +38,7 @@ const UPDATE_CACHE_MS = 10 * 60 * 1000
 const STORE_VERSION = 1
 
 /** Defaults for the plugin's own preferences. */
-const DEFAULT_SETTINGS = { autoCheckUpdate: true }
+const DEFAULT_SETTINGS = { autoCheckUpdate: true, autoTestHosts: true, connectTimeoutSec: 10 }
 const DEFAULT_TIMEOUT_MS = 60000
 const MAX_TIMEOUT_MS = 300000
 const TEST_TIMEOUT_MS = 25000
@@ -119,7 +120,14 @@ function seedHosts() {
  */
 function normalizeSettings(value) {
   const raw = isObject(value) ? value : {}
-  return { autoCheckUpdate: raw.autoCheckUpdate !== false }
+  const seconds = Number(raw.connectTimeoutSec)
+  return {
+    autoCheckUpdate: raw.autoCheckUpdate !== false,
+    autoTestHosts: raw.autoTestHosts !== false,
+    connectTimeoutSec: Number.isFinite(seconds)
+      ? Math.min(60, Math.max(3, Math.floor(seconds)))
+      : DEFAULT_SETTINGS.connectTimeoutSec
+  }
 }
 
 /**
@@ -227,8 +235,8 @@ function publicHost(item) {
  * @param command - command to run on the remote side.
  * @returns argv for `execFile`, with no shell involved.
  */
-function sshArgv(item, command) {
-  const argv = ['-o', 'BatchMode=yes', '-o', `ConnectTimeout=${CONNECT_TIMEOUT_SEC}`, '-o', 'StrictHostKeyChecking=accept-new']
+function sshArgv(item, command, connectTimeoutSec) {
+  const argv = ['-o', 'BatchMode=yes', '-o', `ConnectTimeout=${connectTimeoutSec ?? CONNECT_TIMEOUT_SEC}`, '-o', 'StrictHostKeyChecking=accept-new']
   if (item.port !== 22) argv.push('-p', String(item.port))
   if (item.keyPath !== '') argv.push('-i', item.keyPath, '-o', 'IdentitiesOnly=yes')
   for (const option of item.extraOptions ?? []) argv.push('-o', option)
@@ -240,6 +248,33 @@ function sshArgv(item, command) {
 }
 
 /**
+ * Measure the TCP handshake round trip to a host's SSH port.
+ *
+ * This is the network latency the panel shows: the equivalent of a ping, except
+ * it also works where ICMP is filtered and it measures the port actually used.
+ * @param item - stored host record.
+ * @param timeoutMs - give up after this long.
+ * @returns milliseconds, or null when the handshake does not complete.
+ */
+function measureTcpRtt(item, timeoutMs = 4000) {
+  return new Promise((resolve) => {
+    const started = Date.now()
+    const socket = connect({ host: item.host, port: item.port })
+    let settled = false
+    const finish = (value) => {
+      if (settled) return
+      settled = true
+      socket.destroy()
+      resolve(value)
+    }
+    socket.setTimeout(timeoutMs)
+    socket.once('connect', () => finish(Date.now() - started))
+    socket.once('timeout', () => finish(null))
+    socket.once('error', () => finish(null))
+  })
+}
+
+/**
  * Run one command on a remote host.
  * @param item - stored host record.
  * @param command - remote command.
@@ -247,12 +282,12 @@ function sshArgv(item, command) {
  * @param signal - optional cancellation from the caller.
  * @returns the outcome, including both streams and the elapsed time.
  */
-function execRemote(item, command, timeoutMs, signal) {
+function execRemote(item, command, timeoutMs, signal, connectTimeoutSec) {
   return new Promise((resolve) => {
     const started = Date.now()
     execFile(
       'ssh',
-      sshArgv(item, command),
+      sshArgv(item, command, connectTimeoutSec),
       { timeout: timeoutMs, maxBuffer: MAX_OUTPUT_BYTES, encoding: 'utf8', signal },
       (error, stdout, stderr) => {
         const failed = error !== null
@@ -504,7 +539,7 @@ const RUN_TOOL = {
   execute: async (args, exec) => {
     const data = await readStore()
     const item = findHost(data, args?.host)
-    const result = await execRemote(item, textOf(args?.command), clampTimeout(args?.timeoutMs), exec?.signal)
+    const result = await execRemote(item, textOf(args?.command), clampTimeout(args?.timeoutMs), exec?.signal, data.settings?.connectTimeoutSec)
     return {
       host: result.name,
       target: result.target,
@@ -556,12 +591,13 @@ export function apply(ctx) {
     const body = await readJsonBody(req)
     const data = await readStore()
     const item = findHost(data, body?.id)
-    const result = await execRemote(item, 'echo DSH_SSH_OK', TEST_TIMEOUT_MS)
+    const latencyMs = await measureTcpRtt(item)
+    const result = await execRemote(item, 'echo DSH_SSH_OK', TEST_TIMEOUT_MS, undefined, data.settings?.connectTimeoutSec)
     const stdout = result.stdout.trim()
     const stderr = result.stderr.trim()
     const ok = result.exitCode === 0 && stdout.includes('DSH_SSH_OK')
     const detail = ok ? '连接成功' : (stderr !== '' ? stderr : (stdout !== '' ? stdout : `退出码 ${result.exitCode}`))
-    return { ok, id: item.id, ms: result.ms, exitCode: result.exitCode, timedOut: result.timedOut, message: detail.slice(0, 400) }
+    return { ok, id: item.id, ms: result.ms, latencyMs, exitCode: result.exitCode, timedOut: result.timedOut, message: detail.slice(0, 400) }
   })
 
   const probe = route(async (req) => {
@@ -571,7 +607,7 @@ export function apply(ctx) {
     const remote = item.kind === 'windows'
       ? 'hostname & whoami & ver & (ipconfig | findstr /I "IPv4")'
       : 'hostname; whoami; uname -sr; uptime -p; head -n 2 /etc/os-release'
-    const result = await execRemote(item, remote, 30000)
+    const result = await execRemote(item, remote, 30000, undefined, data.settings?.connectTimeoutSec)
     return { ...result, ok: result.exitCode === 0 }
   })
 
@@ -581,7 +617,7 @@ export function apply(ctx) {
     if (command === '') throw new Error('命令不能为空')
     const data = await readStore()
     const item = findHost(data, body?.id)
-    const result = await execRemote(item, command, clampTimeout(body?.timeoutMs))
+    const result = await execRemote(item, command, clampTimeout(body?.timeoutMs), undefined, data.settings?.connectTimeoutSec)
     return { ...result, ok: result.exitCode === 0 }
   })
 
