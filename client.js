@@ -82,6 +82,8 @@ window.__ModuleLoader__.load({
       '.dsh-ssh-setcheck{width:16px;height:16px;accent-color:var(--dsw-alias-brand-primary);cursor:pointer;margin:0}',
       '.dsh-ssh-setselect{background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary);border-radius:8px;padding:5px 9px;font-size:12px;font-family:inherit;cursor:pointer}',
       '.dsh-ssh-sethint{color:var(--dsw-alias-label-secondary);font-size:12px;padding-top:12px}',
+      '.dsh-ssh-layer{position:fixed;inset:0;z-index:60;pointer-events:none}',
+      '.dsh-ssh-backdrop{position:absolute;inset:0;pointer-events:auto;background:color-mix(in srgb,var(--dsw-alias-bg-base) 40%,transparent)}',
       '.dsh-ssh-overlay{position:fixed;top:84px;right:16px;bottom:16px;width:min(900px,calc(100vw - 32px));pointer-events:auto;z-index:60;display:flex;flex-direction:column;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l2);border-radius:16px;box-shadow:0 24px 64px rgba(0,0,0,.34);overflow:hidden}',
       '.dsh-ssh-panel{display:flex;flex-direction:column;flex:1;min-height:0}'
     ].join('')
@@ -691,10 +693,26 @@ window.__ModuleLoader__.load({
 
     function Overlay() {
       const snapshot = useUiStore()
+      const close = () => uiStore.set({ open: false })
+
+      // Esc 关闭：和宿主自己的弹层一致的行为，只在面板打开时挂监听
+      React.useEffect(() => {
+        if (!snapshot.open) return undefined
+        const onKeyDown = (event) => {
+          if (event.key === 'Escape') close()
+        }
+        document.addEventListener('keydown', onKeyDown)
+        return () => document.removeEventListener('keydown', onKeyDown)
+      }, [snapshot.open])
+
       if (!snapshot.open) return null
-      return h('div', { className: 'dsh-ssh-overlay' },
-        h('div', { className: 'dsh-ssh-panel' },
-          h(ManagerPanel, { onClose: () => uiStore.set({ open: false }) })
+      return h('div', { className: 'dsh-ssh-layer' },
+        // 点面板外面就关：遮罩吃掉这一下点击，面板本身是它的兄弟节点，点不到它
+        h('div', { className: 'dsh-ssh-backdrop', onClick: close }),
+        h('div', { className: 'dsh-ssh-overlay' },
+          h('div', { className: 'dsh-ssh-panel' },
+            h(ManagerPanel, { onClose: close })
+          )
         )
       )
     }
