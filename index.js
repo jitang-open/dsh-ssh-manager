@@ -248,6 +248,24 @@ function sshArgv(item, command, connectTimeoutSec) {
 }
 
 /**
+ * Test one host: TCP handshake latency plus a real authenticated SSH round trip.
+ *
+ * Shared by the HTTP route and the TUI panel so both report the same numbers.
+ * @param item - stored host record.
+ * @param connectTimeoutSec - configured ssh ConnectTimeout.
+ * @returns the report the browser half and the panel both render.
+ */
+async function testHost(item, connectTimeoutSec) {
+  const latencyMs = await measureTcpRtt(item)
+  const result = await execRemote(item, 'echo DSH_SSH_OK', TEST_TIMEOUT_MS, undefined, connectTimeoutSec)
+  const stdout = result.stdout.trim()
+  const stderr = result.stderr.trim()
+  const ok = result.exitCode === 0 && stdout.includes('DSH_SSH_OK')
+  const detail = ok ? '连接成功' : (stderr !== '' ? stderr : (stdout !== '' ? stdout : `退出码 ${result.exitCode}`))
+  return { ok, id: item.id, ms: result.ms, latencyMs, exitCode: result.exitCode, timedOut: result.timedOut, message: detail.slice(0, 400) }
+}
+
+/**
  * Measure the TCP handshake round trip to a host's SSH port.
  *
  * This is the network latency the panel shows: the equivalent of a ping, except
@@ -591,13 +609,7 @@ export function apply(ctx) {
     const body = await readJsonBody(req)
     const data = await readStore()
     const item = findHost(data, body?.id)
-    const latencyMs = await measureTcpRtt(item)
-    const result = await execRemote(item, 'echo DSH_SSH_OK', TEST_TIMEOUT_MS, undefined, data.settings?.connectTimeoutSec)
-    const stdout = result.stdout.trim()
-    const stderr = result.stderr.trim()
-    const ok = result.exitCode === 0 && stdout.includes('DSH_SSH_OK')
-    const detail = ok ? '连接成功' : (stderr !== '' ? stderr : (stdout !== '' ? stdout : `退出码 ${result.exitCode}`))
-    return { ok, id: item.id, ms: result.ms, latencyMs, exitCode: result.exitCode, timedOut: result.timedOut, message: detail.slice(0, 400) }
+    return testHost(item, data.settings?.connectTimeoutSec)
   })
 
   const probe = route(async (req) => {
