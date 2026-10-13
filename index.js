@@ -4,7 +4,8 @@
  * Owns the SSH inventory and the plugin's preferences at
  * `~/.dsh/ssh-manager/hosts.json`, serves nine loopback-only endpoints under
  * `/api/ssh-manager` for the browser half, and
- * registers two model-facing tools (`ssh_hosts`, `ssh_run`).
+ * registers two model-facing tools (`ssh_hosts`, `ssh_run`), and — when the
+ * profile carries dsh-tui's panel service — a side panel listing the hosts.
  *
  * Imports nothing from the Harness: a profile bundle resolves only `node:`
  * builtins and its own relative files, so tool definitions are written as plain
@@ -573,6 +574,153 @@ const RUN_TOOL = {
 }
 
 /**
+ * TUI side-panel body: the host list with live status, the selected host's
+ * details, and a key hint.
+ *
+ * dsh-tui hands the component its own React and a narrowed UI kit, so this
+ * function imports nothing at all: every element and hook comes from `props`.
+ * @param props - TuiPanelProps supplied by the host.
+ * @returns the panel tree.
+ */
+function SshHostsPanel(props) {
+  const React = props.React
+  const { Box, Text } = props.ui
+  const h = React.createElement
+  const [hosts, setHosts] = React.useState([])
+  const [status, setStatus] = React.useState({})
+  const [cursor, setCursor] = React.useState(0)
+  const [note, setNote] = React.useState('')
+
+  // 键盘处理器注册一次就够，靠 ref 读最新状态
+  const live = React.useRef({ hosts: [], cursor: 0 })
+  live.current = { hosts: hosts, cursor: cursor }
+
+  // 面板内唯一合法的定时源；不可见时传 null 暂停
+  const tick = props.ui.useAnimationTime(props.visible ? 30000 : null)
+
+  const reload = React.useCallback(async () => {
+    try {
+      const data = await readStore()
+      const list = data.hosts.map(publicHost)
+      setHosts(list)
+      setNote('')
+      return list
+    } catch (error) {
+      setNote('读取清单失败：' + String(error?.message ?? error))
+      return []
+    }
+  }, [])
+
+  const testOne = React.useCallback(async (id) => {
+    setStatus((prev) => ({ ...prev, [id]: { state: 'testing' } }))
+    try {
+      const data = await readStore()
+      const report = await testHost(findHost(data, id), data.settings?.connectTimeoutSec)
+      setStatus((prev) => ({ ...prev, [id]: { state: report.ok ? 'ok' : 'fail', latencyMs: report.latencyMs, ms: report.ms, message: report.message } }))
+    } catch (error) {
+      setStatus((prev) => ({ ...prev, [id]: { state: 'fail', message: String(error?.message ?? error) } }))
+    }
+  }, [])
+
+  const testAll = React.useCallback((list) => {
+    for (const item of (list ?? live.current.hosts)) testOne(item.id)
+  }, [testOne])
+
+  // 进入面板先读清单；按设置决定是否自动测；tick 每 30s 触发一轮刷新
+  React.useEffect(() => {
+    let alive = true
+    reload().then((list) => {
+      if (!alive) return
+      readStore().then((data) => {
+        if (alive && data.settings?.autoTestHosts !== false) testAll(list)
+      }).catch(() => {})
+    })
+    return () => { alive = false }
+  }, [reload, testAll, tick])
+
+  React.useEffect(() => props.host.onKey((event) => {
+    const list = live.current.hosts
+    const move = (delta) => {
+      if (list.length === 0) return
+      setCursor((prev) => Math.min(list.length - 1, Math.max(0, prev + delta)))
+      event.preventDefault()
+    }
+    if (event.key.upArrow === true || event.input === 'k') return move(-1)
+    if (event.key.downArrow === true || event.input === 'j') return move(1)
+    const current = list[live.current.cursor]
+    if (event.input === 't' && current !== undefined) {
+      testOne(current.id)
+      return event.preventDefault()
+    }
+    if (event.input === 'r') {
+      testAll()
+      return event.preventDefault()
+    }
+    return undefined
+  }), [props.host, testOne, testAll])
+
+  const current = hosts[cursor]
+  const rows = hosts.map((item, index) => {
+    const st = status[item.id] ?? { state: 'idle' }
+    const active = index === cursor
+    const dot = st.state === 'ok' ? '●' : (st.state === 'fail' ? '●' : (st.state === 'testing' ? '◌' : '○'))
+    const dotColor = st.state === 'ok' ? 'success' : (st.state === 'fail' ? 'error' : (st.state === 'testing' ? 'warning' : 'inactive'))
+    const line = st.state === 'ok'
+      ? '在线 · ' + (typeof st.latencyMs === 'number' ? st.latencyMs : st.ms) + ' ms'
+      : (st.state === 'fail' ? '离线' : (st.state === 'testing' ? '测试中…' : '未测试'))
+    return h(Box, { key: item.id, flexDirection: 'column', paddingX: 1 },
+      h(Box, { flexDirection: 'row' },
+        h(Text, { color: active ? 'accent' : 'subtle' }, active ? '▸ ' : '  '),
+        h(Text, { color: dotColor }, dot + ' '),
+        h(Text, { color: 'text', bold: active }, item.name)
+      ),
+      h(Box, { flexDirection: 'row' },
+        h(Text, { color: 'subtle' }, '   ' + item.user + '@' + item.host),
+        h(Text, { color: st.state === 'ok' ? 'success' : 'subtle' }, '  ' + line)
+      )
+    )
+  })
+
+  const detail = current === undefined ? null : h(Box, { flexDirection: 'column', paddingX: 1, marginTop: 1 },
+    h(Text, { color: 'subtle' }, '─'.repeat(Math.max(8, props.width - 4))),
+    h(Text, { color: 'subtle' }, '地址  ' + current.host + ':' + current.port),
+    h(Text, { color: 'subtle' }, '用户  ' + current.user),
+    h(Text, { color: 'subtle' }, '系统  ' + (current.kind === 'windows' ? 'Windows' : 'Linux')),
+    current.note === '' ? null : h(Text, { color: 'subtle', wrap: 'wrap' }, '备注  ' + current.note)
+  )
+
+  return h(Box, { flexDirection: 'column', width: props.width, height: props.height },
+    hosts.length === 0
+      ? h(Text, { color: 'subtle' }, '清单为空 —— 在 Web 面板里添加主机')
+      : h(Box, { flexDirection: 'column' }, rows),
+    note === '' ? null : h(Text, { color: 'error', wrap: 'wrap' }, note),
+    detail,
+    h(Text, { color: props.focused ? 'subtle' : 'inactive' }, '↑↓ 选择 · t 测试 · r 全测')
+  )
+}
+
+/**
+ * Register the TUI side panel when the profile carries the panel service.
+ *
+ * dsh-tui provides `tuiPanels`; a Web-only profile does not, so this is a
+ * no-op there and the Web half keeps working unchanged.
+ * @param ctx - the host context.
+ */
+function mountTuiPanel(ctx) {
+  const panels = ctx.get('tuiPanels')
+  if (panels === undefined || panels === null) return
+  const dispose = panels.register({
+    apiVersion: 1,
+    id: 'hosts',
+    title: 'SSH 管理器',
+    minColumns: 28,
+    order: 40,
+    component: SshHostsPanel
+  }, ctx)
+  ctx.effect(() => dispose ?? (() => {}), 'ssh-manager: tui hosts panel')
+}
+
+/**
  * Mount the SSH manager.
  * @param ctx - the host context carrying `webServer` and `tools`.
  */
@@ -632,6 +780,8 @@ export function apply(ctx) {
     const result = await execRemote(item, command, clampTimeout(body?.timeoutMs), undefined, data.settings?.connectTimeoutSec)
     return { ...result, ok: result.exitCode === 0 }
   })
+
+  mountTuiPanel(ctx)
 
   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/hosts`, handler: list }), 'ssh-manager: list route')
   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: `${API_PREFIX}/save`, handler: save }), 'ssh-manager: save route')
