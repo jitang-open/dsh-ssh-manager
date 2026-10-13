@@ -4,12 +4,13 @@ SSH 主机管理器，作为 DeepSeek Harness 的 **profile bundle** 常驻：�
 点开是全高浮层面板；同一份主机清单还注册成两个模型工具，可以直接在对话里说
 「登到腾讯云看看磁盘」。
 
-## 两个半部分
+## 三个面
 
 | 文件 | 作用 |
 |---|---|
-| `index.js` | 宿主半部分：清单读写（`~/.dsh/ssh-manager/hosts.json`）、六个 loopback-only 的 `/api/ssh-manager/*` 端点、两个模型工具 `ssh_hosts` / `ssh_run` |
+| `index.js` | 宿主半部分：清单读写（`~/.dsh/ssh-manager/hosts.json`）、九个 loopback-only 的 `/api/ssh-manager/*` 端点、两个模型工具 `ssh_hosts` / `ssh_run` |
 | `client.js` | 浏览器半部分：手写 `__ModuleLoader__` bundle（无构建步骤），标题栏右侧的「SSH 管理」按钮 + 全高浮层面板 |
+| `index.js` 里的 `SshHostsPanel` | TUI 半部分：dsh-tui 的侧栏面板（同一进程内直接读清单，不走 HTTP） |
 
 ## 一条硬约束：不 import 任何 harness 包
 
@@ -21,6 +22,31 @@ SSH 主机管理器，作为 DeepSeek Harness 的 **profile bundle** 常驻：�
 所以两个工具的定义是**手写的原生 JSON Schema 对象**，直接交给 `ctx.tools.register`，
 而不是走 `defineTool` DSL。同理，客户端只用 `ctx.slots`，不 require 任何
 `@deepseek-ai/dsh-client-*`。
+
+## TUI 侧栏面板（dsh-tui）
+
+profile 里挂着 dsh-tui 时，宿主半部分会**特性探测**地注册一个侧栏面板
+（`ctx.get('tuiPanels')`，Web-only profile 没有这个服务就跳过，同一份包两处都能装）。
+面板显示主机列表、实时状态与**网络 RTT**，选中行下面是地址/用户/系统/备注：
+
+| 键 | 作用 |
+|---|---|
+| `↑` / `↓`（或 `k` / `j`） | 选择主机 |
+| `t` | 测试当前主机 |
+| `r` | 全部重测 |
+| `Esc` | 焦点回到输入框（不关面板） |
+
+面板组件只用宿主传进来的 `props.React` 与 `props.ui`（`Box` / `Text`），**不 import 任何包**，
+与「不 import harness 包」那条硬约束一致；定时刷新走宿主唯一允许的
+`ui.useAnimationTime`，面板不可见时自动暂停。
+
+**插件面板默认不在标签栏里**——侧栏的启用清单是一份逗号分隔的设置，默认只有内置的
+8 个面板。装好后要到 **`/settings` → 侧栏 → 「启用的面板」** 里勾上「SSH 管理器」，
+再按 `Ctrl+B` 打开侧栏（分栏要求 fullscreen 且内容区 ≥93 列）才看得到。
+
+以 profile bundle 身份安装的插件拿不到 TUI 生态的 `dsh-plugin.json` 组件身份，面板 id 会
+走宿主发的 fallback 序号（形如 `act1:hosts`）——实测跨会话稳定，但换用插件准入后才会是
+稳定的 `<组件名>:hosts`。
 
 ## 安装
 
@@ -99,5 +125,8 @@ dsh --profile web --no-open --port 3099
 | POST | `/api/ssh-manager/test` | 连接测试 |
 | POST | `/api/ssh-manager/probe` | 探测主机信息 |
 | POST | `/api/ssh-manager/exec` | 执行命令 |
+| GET | `/api/ssh-manager/version` | 版本 / 检测更新（`?force=1` 绕缓存，`?local=1` 只读本地不联网） |
+| GET | `/api/ssh-manager/settings` | 读插件设置 |
+| POST | `/api/ssh-manager/settings/save` | 写插件设置 |
 
 全部只接受 loopback 来源；非本机请求返回 403。
