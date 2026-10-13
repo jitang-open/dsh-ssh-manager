@@ -708,7 +708,10 @@ function SshHostsPanel(props) {
  */
 function mountTuiPanel(ctx) {
   const panels = ctx.get('tuiPanels')
-  if (panels === undefined || panels === null) return
+  if (panels === undefined || panels === null) {
+    console.log('[ssh-manager] 无 tuiPanels 服务，跳过 TUI 侧栏面板（Web-only profile）')
+    return
+  }
   const dispose = panels.register({
     apiVersion: 1,
     id: 'hosts',
@@ -717,6 +720,9 @@ function mountTuiPanel(ctx) {
     order: 40,
     component: SshHostsPanel
   }, ctx)
+  console.log(dispose === undefined
+    ? '[ssh-manager] TUI 侧栏面板被拒绝（原因见上面 warn）'
+    : '[ssh-manager] TUI 侧栏面板已注册；当前面板列表=' + JSON.stringify(panels.list()))
   ctx.effect(() => dispose ?? (() => {}), 'ssh-manager: tui hosts panel')
 }
 
